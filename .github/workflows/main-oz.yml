@@ -1,0 +1,110 @@
+name: Main OZ
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Run hourly at minute 15 (UTC)
+    - cron: "15 * * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: main-oz-cdr-refresh
+  cancel-in-progress: false
+
+jobs:
+  pull-and-refresh:
+    name: Pull Ozonetel CDR and refresh Google Sheets
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip gspread google-auth
+
+      - name: Configure Ozonetel credentials
+        env:
+          OZONETEL_API_KEY: ${{ secrets.OZONETEL_API_KEY }}
+          OZONETEL_USER_NAME: ${{ secrets.OZONETEL_USER_NAME }}
+          OZONETEL_HOST: ${{ vars.OZONETEL_HOST }}
+        run: |
+          python - <<'PY'
+          import configparser, os
+          cfg = configparser.ConfigParser()
+          cfg["ozonetel"] = {
+              "host": os.environ.get("OZONETEL_HOST") or "in1-ccaas-api.ozonetel.com",
+              "api_key": os.environ["OZONETEL_API_KEY"],
+              "user_name": os.environ["OZONETEL_USER_NAME"],
+          }
+          with open("config.ini", "w") as f:
+              cfg.write(f)
+          PY
+
+      - name: Pull latest 14 calendar days
+        run: python ozonetel_cdr_pull.py --days 14
+
+      - name: Refresh Google Sheets tab
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: |
+          python - <<'PY'
+          import csv, json, os
+          import gspread
+          from google.oauth2.service_account import Credentials
+
+          sheet_id = os.environ.get("GOOGLE_SHEET_ID", "").strip()
+          if not sheet_id:
+              raise SystemExit(
+                  "Missing repository secret GOOGLE_SHEET_ID. Set it to the spreadsheet ID "
+                  "for the CDR output workbook."
+              )
+
+          credentials_info = json.loads(os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"])
+          scopes = ["https://www.googleapis.com/auth/spreadsheets"]
+          credentials = Credentials.from_service_account_info(credentials_info, scopes=scopes)
+          client = gspread.authorize(credentials)
+          spreadsheet = client.open_by_key(sheet_id)
+          try:
+              worksheet = spreadsheet.worksheet("ozontel dump")
+          except gspread.WorksheetNotFound:
+              worksheet = spreadsheet.add_worksheet(title="ozontel dump", rows=1000, cols=40)
+
+          with open("ozonetel_cdr.csv", newline="", encoding="utf-8-sig") as f:
+              rows = list(csv.reader(f))
+
+          if not rows:
+              raise SystemExit("CSV is empty; refusing to clear the existing worksheet.")
+
+          worksheet.clear()
+          worksheet.resize(rows=max(len(rows), 1), cols=max(max(map(len, rows)), 1))
+          # Send in chunks to avoid oversized single API requests.
+          chunk_size = 5000
+          for start in range(0, len(rows), chunk_size):
+              chunk = rows[start:start + chunk_size]
+              worksheet.update(
+                  range_name=f"A{start + 1}",
+                  values=chunk,
+                  value_input_option="RAW",
+              )
+
+          print(f"Updated '{worksheet.title}' with {len(rows) - 1:,} CDR rows and {len(rows[0])} columns.")
+          PY
+
+      - name: Upload CDR CSV artifact
+        if: always() && hashFiles('ozonetel_cdr.csv') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: ozonetel-cdr-${{ github.run_id }}
+          path: ozonetel_cdr.csv
+          retention-days: 7
