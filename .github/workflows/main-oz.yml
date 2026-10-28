@@ -125,8 +125,13 @@ jobs:
                   "Missing repository secret GOOGLE_SERVICE_ACCOUNT_JSON."
               )
 
-          # Attempt to repair a missing opening brace only.
-          normalized_json = raw_json
+          # Accept JSON copied with Markdown fences or a leading label.
+          # Never print the secret itself in logs.
+          normalized_json = raw_json.strip()
+          normalized_json = normalized_json.replace("```json", "").replace("```", "").strip()
+
+          # If the opening brace was accidentally omitted, restore it only
+          # when the expected service-account fields are present.
           if (
               not normalized_json.startswith("{")
               and normalized_json.endswith("}")
@@ -137,12 +142,26 @@ jobs:
               normalized_json = "{" + normalized_json
 
           try:
-              credentials_info = json.loads(normalized_json)
-          except json.JSONDecodeError as e:
+              start = normalized_json.find("{")
+              if start < 0:
+                  raise ValueError("No JSON object opening brace was found.")
+
+              decoder = json.JSONDecoder()
+              credentials_info, end = decoder.raw_decode(normalized_json, start)
+              trailing = normalized_json[end:].strip()
+              if trailing:
+                  raise ValueError(
+                      "Extra text exists after the JSON object. "
+                      "The secret must contain only one complete JSON object."
+                  )
+          except (json.JSONDecodeError, ValueError) as e:
               raise SystemExit(
-                  "GOOGLE_SERVICE_ACCOUNT_JSON is invalid JSON. Replace the "
-                  "GitHub secret with the complete service-account JSON file. "
-                  f"JSON error at line {e.lineno}, column {e.colno}."
+                  "GOOGLE_SERVICE_ACCOUNT_JSON is malformed. In GitHub "
+                  "Settings > Secrets and variables > Actions, replace it with "
+                  "the complete downloaded service-account JSON file. Include "
+                  "the opening { and closing }, and do not include labels, "
+                  "multiple JSON objects, or private-key text separately. "
+                  f"Details: {e}"
               )
 
           if not isinstance(credentials_info, dict):
