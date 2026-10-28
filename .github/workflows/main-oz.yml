@@ -138,6 +138,14 @@ jobs:
                   cols=40,
               )
 
+          from datetime import datetime, timedelta
+          from zoneinfo import ZoneInfo
+
+          ist = ZoneInfo("Asia/Kolkata")
+          expected_date = (
+              datetime.now(ist).date() - timedelta(days=1)
+          ).strftime("%d-%m-%Y")
+
           with open(
               "ozonetel_cdr.csv",
               newline="",
@@ -146,17 +154,40 @@ jobs:
               rows = list(csv.reader(f))
 
           if not rows:
-              raise SystemExit(
-                  "CSV is empty; refusing to clear the existing worksheet."
-              )
+              raise SystemExit("CSV is empty; refusing to clear the existing worksheet.")
 
-          if not any(any(cell.strip() for cell in row) for row in rows):
+          if "Call Date" not in rows[0]:
+              raise SystemExit("CSV is missing the 'Call Date' column; refusing to update the worksheet.")
+
+          call_date_index = rows[0].index("Call Date")
+          data_rows = [row for row in rows[1:] if any(cell.strip() for cell in row)]
+
+          mismatched_dates = sorted({
+              row[call_date_index].strip()
+              for row in data_rows
+              if len(row) > call_date_index and row[call_date_index].strip() != expected_date
+          })
+          missing_dates = [
+              i + 2 for i, row in enumerate(rows[1:])
+              if any(cell.strip() for cell in row)
+              and (len(row) <= call_date_index or not row[call_date_index].strip())
+          ]
+
+          if mismatched_dates or missing_dates:
               raise SystemExit(
-                  "CSV contains no data; refusing to clear the existing worksheet."
+                  f"CSV is not T-1-only (expected Call Date {expected_date}). "
+                  f"Unexpected dates: {mismatched_dates[:10]}; "
+                  f"rows with missing dates: {missing_dates[:10]}. "
+                  "Refusing to clear the existing worksheet."
               )
 
           column_count = max(len(row) for row in rows)
+          print(
+              f"Validated {len(data_rows):,} CDR rows for T-1 {expected_date}."
+          )
 
+          # Clear only after the CSV has been validated as T-1 data.
+          # A header-only CSV is valid when there were no calls yesterday.
           worksheet.clear()
           worksheet.resize(
               rows=max(len(rows), 1),
