@@ -57,6 +57,8 @@ jobs:
           PY
 
       - name: Pull month-to-date data available from Ozonetel
+        env:
+          TZ: Asia/Kolkata
         run: |
           # Ozonetel API exposes only the latest 15 calendar days.
           # Pull from the later of the 1st of this month or 14 days before today.
