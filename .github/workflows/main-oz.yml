@@ -1,3 +1,4 @@
+
 name: Main OZ
 
 on:
@@ -38,39 +39,54 @@ jobs:
           OZONETEL_HOST: ${{ vars.OZONETEL_HOST }}
         run: |
           python - <<'PY'
-          import configparser, os
-          cfg = configparser.ConfigParser()
+          import configparser
+          import os
+
           api_key = os.environ.get("OZONETEL_API_KEY", "").strip()
           user_name = os.environ.get("OZONETEL_USER_NAME", "").strip()
+
           if not api_key or not user_name:
               raise SystemExit(
                   "Missing GitHub Actions secret(s): set OZONETEL_API_KEY and "
                   "OZONETEL_USER_NAME in Settings > Secrets and variables > Actions."
               )
+
+          cfg = configparser.ConfigParser()
           cfg["ozonetel"] = {
-              "host": os.environ.get("OZONETEL_HOST") or "in1-ccaas-api.ozonetel.com",
+              "host": (
+                  os.environ.get("OZONETEL_HOST", "").strip()
+                  or "in1-ccaas-api.ozonetel.com"
+              ),
               "api_key": api_key,
               "user_name": user_name,
           }
+
           with open("config.ini", "w") as f:
               cfg.write(f)
+
+          print("Ozonetel credentials configured.")
           PY
 
       - name: Pull T-1 data from Ozonetel
         env:
           TZ: Asia/Kolkata
         run: |
-          # T-1 means yesterday in India Standard Time.
-          python - <<'PY'
-          from datetime import date, timedelta
-          yesterday = date.today() - timedelta(days=1)
-          cdr_date = yesterday.strftime("%d-%m-%Y")
-          print(f"Pulling T-1 Ozonetel CDR data for {cdr_date}")
-          with open(".cdr_date", "w") as f:
-              f.write(cdr_date)
+          # T-1 means yesterday according to India Standard Time.
+          CDR_DATE=$(python - <<'PY'
+          from datetime import datetime, timedelta
+          from zoneinfo import ZoneInfo
+
+          ist = ZoneInfo("Asia/Kolkata")
+          yesterday = datetime.now(ist).date() - timedelta(days=1)
+          print(yesterday.strftime("%d-%m-%Y"))
           PY
-          CDR_DATE="$(cat .cdr_date)"
-          python ozonetel_cdr_pull.py --from "$CDR_DATE" --to "$CDR_DATE"
+          )
+
+          echo "Pulling Ozonetel CDR data for T-1: ${CDR_DATE}"
+
+          python ozonetel_cdr_pull.py \
+            --from "$CDR_DATE" \
+            --to "$CDR_DATE"
 
       - name: Refresh Google Sheets tab
         env:
@@ -78,46 +94,92 @@ jobs:
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
         run: |
           python - <<'PY'
-          import csv, json, os
+          import csv
+          import json
+          import os
+
           import gspread
           from google.oauth2.service_account import Credentials
 
           sheet_id = os.environ.get("GOOGLE_SHEET_ID", "").strip()
+          service_account_json = os.environ.get(
+              "GOOGLE_SERVICE_ACCOUNT_JSON", ""
+          ).strip()
+
           if not sheet_id:
               raise SystemExit(
-                  "Missing repository secret GOOGLE_SHEET_ID. Set it to the spreadsheet ID "
-                  "for the CDR output workbook."
+                  "Missing repository secret GOOGLE_SHEET_ID."
               )
 
-          credentials_info = json.loads(os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"])
-          scopes = ["https://www.googleapis.com/auth/spreadsheets"]
-          credentials = Credentials.from_service_account_info(credentials_info, scopes=scopes)
+          if not service_account_json:
+              raise SystemExit(
+                  "Missing repository secret GOOGLE_SERVICE_ACCOUNT_JSON."
+              )
+
+          credentials_info = json.loads(service_account_json)
+          scopes = [
+              "https://www.googleapis.com/auth/spreadsheets"
+          ]
+
+          credentials = Credentials.from_service_account_info(
+              credentials_info,
+              scopes=scopes,
+          )
+
           client = gspread.authorize(credentials)
           spreadsheet = client.open_by_key(sheet_id)
+
           try:
               worksheet = spreadsheet.worksheet("ozontel dump")
           except gspread.WorksheetNotFound:
-              worksheet = spreadsheet.add_worksheet(title="ozontel dump", rows=1000, cols=40)
+              worksheet = spreadsheet.add_worksheet(
+                  title="ozontel dump",
+                  rows=1000,
+                  cols=40,
+              )
 
-          with open("ozonetel_cdr.csv", newline="", encoding="utf-8-sig") as f:
+          with open(
+              "ozonetel_cdr.csv",
+              newline="",
+              encoding="utf-8-sig",
+          ) as f:
               rows = list(csv.reader(f))
 
           if not rows:
-              raise SystemExit("CSV is empty; refusing to clear the existing worksheet.")
+              raise SystemExit(
+                  "CSV is empty; refusing to clear the existing worksheet."
+              )
+
+          if not any(any(cell.strip() for cell in row) for row in rows):
+              raise SystemExit(
+                  "CSV contains no data; refusing to clear the existing worksheet."
+              )
+
+          column_count = max(len(row) for row in rows)
 
           worksheet.clear()
-          worksheet.resize(rows=max(len(rows), 1), cols=max(max(map(len, rows)), 1))
-          # Send in chunks to avoid oversized single API requests.
+          worksheet.resize(
+              rows=max(len(rows), 1),
+              cols=max(column_count, 1),
+          )
+
+          # Send data in chunks to avoid oversized API requests.
           chunk_size = 5000
+
           for start in range(0, len(rows), chunk_size):
               chunk = rows[start:start + chunk_size]
+
               worksheet.update(
                   range_name=f"A{start + 1}",
                   values=chunk,
                   value_input_option="RAW",
               )
 
-          print(f"Updated '{worksheet.title}' with {len(rows) - 1:,} CDR rows and {len(rows[0])} columns.")
+          print(
+              f"Updated '{worksheet.title}' with "
+              f"{max(len(rows) - 1, 0):,} CDR rows "
+              f"and {column_count} columns."
+          )
           PY
 
       - name: Upload CDR CSV artifact
