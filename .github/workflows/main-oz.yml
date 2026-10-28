@@ -1,4 +1,4 @@
-
+```yaml
 name: Main OZ99
 
 on:
@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   pull-and-refresh:
-    name: Pull Ozonetel CDR and refresh Google Sheets
+    name: Pull T-1 Ozonetel CDR and refresh Google Sheets
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -47,8 +47,8 @@ jobs:
 
           if not api_key or not user_name:
               raise SystemExit(
-                  "Missing GitHub Actions secret(s): set OZONETEL_API_KEY and "
-                  "OZONETEL_USER_NAME in Settings > Secrets and variables > Actions."
+                  "Missing GitHub Actions secrets: OZONETEL_API_KEY "
+                  "and/or OZONETEL_USER_NAME."
               )
 
           cfg = configparser.ConfigParser()
@@ -67,31 +67,42 @@ jobs:
           print("Ozonetel credentials configured.")
           PY
 
-      - name: Pull T-1 data from Ozonetel
-        env:
-          TZ: Asia/Kolkata
+      - name: Calculate T-1 date (India Standard Time)
+        id: t1
         run: |
-          # T-1 means yesterday according to India Standard Time.
           CDR_DATE=$(python - <<'PY'
           from datetime import datetime, timedelta
           from zoneinfo import ZoneInfo
 
-          ist = ZoneInfo("Asia/Kolkata")
-          yesterday = datetime.now(ist).date() - timedelta(days=1)
+          today_ist = datetime.now(ZoneInfo("Asia/Kolkata")).date()
+          yesterday = today_ist - timedelta(days=1)
           print(yesterday.strftime("%d-%m-%Y"))
           PY
           )
 
-          echo "Pulling Ozonetel CDR data for T-1: ${CDR_DATE}"
+          echo "cdr_date=$CDR_DATE" >> "$GITHUB_OUTPUT"
+          echo "T-1 CDR date (IST): $CDR_DATE"
+
+      - name: Pull only T-1 data from Ozonetel
+        env:
+          CDR_DATE: ${{ steps.t1.outputs.cdr_date }}
+        run: |
+          echo "Fetching CDR data for $CDR_DATE only."
 
           python ozonetel_cdr_pull.py \
             --from "$CDR_DATE" \
             --to "$CDR_DATE"
 
-      - name: Refresh Google Sheets tab
+          if [ ! -f ozonetel_cdr.csv ]; then
+            echo "ERROR: ozonetel_cdr.csv was not created."
+            exit 1
+          fi
+
+      - name: Validate and refresh Google Sheets tab
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+          CDR_DATE: ${{ steps.t1.outputs.cdr_date }}
         run: |
           python - <<'PY'
           import csv
@@ -102,23 +113,21 @@ jobs:
           from google.oauth2.service_account import Credentials
 
           sheet_id = os.environ.get("GOOGLE_SHEET_ID", "").strip()
-          service_account_json = os.environ.get(
+          raw_json = os.environ.get(
               "GOOGLE_SERVICE_ACCOUNT_JSON", ""
           ).strip()
+          expected_date = os.environ["CDR_DATE"].strip()
 
           if not sheet_id:
-              raise SystemExit(
-                  "Missing repository secret GOOGLE_SHEET_ID."
-              )
+              raise SystemExit("Missing repository secret GOOGLE_SHEET_ID.")
 
-          if not service_account_json:
+          if not raw_json:
               raise SystemExit(
                   "Missing repository secret GOOGLE_SERVICE_ACCOUNT_JSON."
               )
 
-          # Accept a service-account JSON object copied without its opening
-          # brace, a common copy/paste mistake in GitHub Secrets.
-          normalized_json = service_account_json.strip()
+          # Attempt to repair a missing opening brace only.
+          normalized_json = raw_json
           if (
               not normalized_json.startswith("{")
               and normalized_json.endswith("}")
@@ -132,25 +141,22 @@ jobs:
               credentials_info = json.loads(normalized_json)
           except json.JSONDecodeError as e:
               raise SystemExit(
-                  "GOOGLE_SERVICE_ACCOUNT_JSON is not valid JSON. In GitHub "
-                  "Settings > Secrets and variables > Actions, update this secret "
-                  "with the complete downloaded service-account JSON file, including "
-                  "the opening { and closing }. Do not paste the key into the YAML. "
+                  "GOOGLE_SERVICE_ACCOUNT_JSON is invalid JSON. Replace the "
+                  "GitHub secret with the complete service-account JSON file. "
                   f"JSON error at line {e.lineno}, column {e.colno}."
               )
 
+          if not isinstance(credentials_info, dict):
+              raise SystemExit("Service-account credentials must be a JSON object.")
+
           if credentials_info.get("type") != "service_account":
               raise SystemExit(
-                  "GOOGLE_SERVICE_ACCOUNT_JSON must be a Google service-account key JSON file."
+                  "GOOGLE_SERVICE_ACCOUNT_JSON must contain a service-account key."
               )
-
-          scopes = [
-              "https://www.googleapis.com/auth/spreadsheets"
-          ]
 
           credentials = Credentials.from_service_account_info(
               credentials_info,
-              scopes=scopes,
+              scopes=["https://www.googleapis.com/auth/spreadsheets"],
           )
 
           client = gspread.authorize(credentials)
@@ -165,14 +171,6 @@ jobs:
                   cols=40,
               )
 
-          from datetime import datetime, timedelta
-          from zoneinfo import ZoneInfo
-
-          ist = ZoneInfo("Asia/Kolkata")
-          expected_date = (
-              datetime.now(ist).date() - timedelta(days=1)
-          ).strftime("%d-%m-%Y")
-
           with open(
               "ozonetel_cdr.csv",
               newline="",
@@ -181,52 +179,68 @@ jobs:
               rows = list(csv.reader(f))
 
           if not rows:
-              raise SystemExit("CSV is empty; refusing to clear the existing worksheet.")
-
-          if "Call Date" not in rows[0]:
-              raise SystemExit("CSV is missing the 'Call Date' column; refusing to update the worksheet.")
-
-          call_date_index = rows[0].index("Call Date")
-          data_rows = [row for row in rows[1:] if any(cell.strip() for cell in row)]
-
-          mismatched_dates = sorted({
-              row[call_date_index].strip()
-              for row in data_rows
-              if len(row) > call_date_index and row[call_date_index].strip() != expected_date
-          })
-          missing_dates = [
-              i + 2 for i, row in enumerate(rows[1:])
-              if any(cell.strip() for cell in row)
-              and (len(row) <= call_date_index or not row[call_date_index].strip())
-          ]
-
-          if mismatched_dates or missing_dates:
               raise SystemExit(
-                  f"CSV is not T-1-only (expected Call Date {expected_date}). "
-                  f"Unexpected dates: {mismatched_dates[:10]}; "
-                  f"rows with missing dates: {missing_dates[:10]}. "
+                  "CSV is empty. Refusing to clear the existing worksheet."
+              )
+
+          headers = rows[0]
+
+          if "Call Date" not in headers:
+              raise SystemExit(
+                  "CSV is missing the 'Call Date' column. "
                   "Refusing to clear the existing worksheet."
               )
 
+          date_index = headers.index("Call Date")
+          data_rows = [
+              row for row in rows[1:]
+              if any(cell.strip() for cell in row)
+          ]
+
+          unexpected_dates = sorted({
+              row[date_index].strip()
+              for row in data_rows
+              if len(row) > date_index
+              and row[date_index].strip() != expected_date
+          })
+
+          missing_date_rows = [
+              index + 2
+              for index, row in enumerate(rows[1:])
+              if any(cell.strip() for cell in row)
+              and (
+                  len(row) <= date_index
+                  or not row[date_index].strip()
+              )
+          ]
+
+          if unexpected_dates or missing_date_rows:
+              raise SystemExit(
+                  f"CSV failed T-1 validation. Expected Call Date "
+                  f"{expected_date}; unexpected dates: {unexpected_dates[:10]}; "
+                  f"rows with missing dates: {missing_date_rows[:10]}. "
+                  "Existing worksheet was not cleared."
+              )
+
           column_count = max(len(row) for row in rows)
+
           print(
-              f"Validated {len(data_rows):,} CDR rows for T-1 {expected_date}."
+              f"Validation successful: {len(data_rows):,} rows "
+              f"for T-1 {expected_date}."
           )
 
-          # Clear only after the CSV has been validated as T-1 data.
-          # A header-only CSV is valid when there were no calls yesterday.
+          # Clear the tab only after validation succeeds.
+          # Header-only CSV is allowed when there were no calls on T-1.
           worksheet.clear()
           worksheet.resize(
               rows=max(len(rows), 1),
               cols=max(column_count, 1),
           )
 
-          # Send data in chunks to avoid oversized API requests.
           chunk_size = 5000
 
           for start in range(0, len(rows), chunk_size):
               chunk = rows[start:start + chunk_size]
-
               worksheet.update(
                   range_name=f"A{start + 1}",
                   values=chunk,
@@ -234,9 +248,8 @@ jobs:
               )
 
           print(
-              f"Updated '{worksheet.title}' with "
-              f"{max(len(rows) - 1, 0):,} CDR rows "
-              f"and {column_count} columns."
+              f"Successfully refreshed '{worksheet.title}' with "
+              f"{len(data_rows):,} T-1 CDR rows and {column_count} columns."
           )
           PY
 
@@ -247,3 +260,4 @@ jobs:
           name: ozonetel-cdr-${{ github.run_id }}
           path: ozonetel_cdr.csv
           retention-days: 7
+```
