@@ -1,4 +1,4 @@
-"""Refresh the latest T-4 window while preserving older sheet data."""
+"""Append T-2 CDR rows without changing existing sheet data or the 18-column layout."""
 import csv
 import json
 import os
@@ -68,7 +68,7 @@ def main():
     if invalid_dates:
         raise SystemExit(f"Upload stopped: found an unparseable Call Date: {invalid_dates[0]!r}")
 
-    # Reject rows outside the requested T-4 refresh window.
+    # Reject rows outside the requested T-2 append date.
     incoming_dates = [parse_date(r[date_idx]) for r in incoming]
     if any(d < start_date or d > end_date for d in incoming_dates):
         raise SystemExit("Upload stopped: CSV contains Call Date values outside the requested refresh window.")
@@ -102,25 +102,26 @@ def main():
         ]
     else:
         old_rows = []
+        worksheet.update(range_name="A1", values=[EXPECTED_HEADERS], value_input_option="RAW")
 
-    old_in_window = [r for r in old_rows if (parse_date(r[date_idx]) is not None and start_date <= parse_date(r[date_idx]) <= end_date)]
-    historical_rows = [
-        r for r in old_rows
-        if parse_date(r[date_idx]) is None or not (start_date <= parse_date(r[date_idx]) <= end_date)
-    ]
+    # Append-only: never clear, rewrite, sort, or replace existing sheet rows.
+    # Exact-row matching prevents duplicates when the scheduled workflow reruns.
+    existing_row_keys = {tuple(r) for r in old_rows}
+    new_rows = []
+    seen_new_keys = set()
+    for row in incoming:
+        key = tuple((row + [""] * len(EXPECTED_HEADERS))[:len(EXPECTED_HEADERS)])
+        if key not in existing_row_keys and key not in seen_new_keys:
+            new_rows.append(list(key))
+            seen_new_keys.add(key)
 
-    old_dates = {parse_date(r[date_idx]) for r in old_rows if parse_date(r[date_idx])}
-    incoming_window_dates = {d for d in incoming_dates}
-    # Count rows from dates that did not exist before as newly added; the rest replace refreshed dates.
-    rows_added = sum(1 for r in incoming if parse_date(r[date_idx]) not in old_dates)
-    rows_refreshed = len(old_in_window)
-    merged_rows = historical_rows + incoming
-    merged_rows.sort(key=lambda r: (parse_date(r[date_idx]) or datetime.min.date(), r[6] if len(r) > 6 else ""))
+    if new_rows:
+        worksheet.append_rows(new_rows, value_input_option="USER_ENTERED", table_range="A1")
 
-    output = [EXPECTED_HEADERS] + merged_rows
-    worksheet.clear()
-    worksheet.resize(rows=max(len(output), 1), cols=len(EXPECTED_HEADERS))
-    worksheet.update(range_name="A1", values=output, value_input_option="USER_ENTERED")
+    rows_added = len(new_rows)
+    rows_refreshed = 0
+    historical_rows_count = len(old_rows)
+    total_rows = len(old_rows) + rows_added
 
     log_ws = get_or_create_worksheet(spreadsheet, LOG_WORKSHEET_NAME, rows=1000, cols=len(LOG_HEADERS))
     current_headers = log_ws.row_values(1)
@@ -130,16 +131,15 @@ def main():
     timestamp = datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%d-%b-%Y %I:%M:%S %p")
     log_row = [
         timestamp, "SUCCESS", start_date.strftime("%d-%m-%Y"), end_date.strftime("%d-%m-%Y"),
-        rows_added, rows_refreshed, len(historical_rows), len(merged_rows), len(EXPECTED_HEADERS),
+        rows_added, rows_refreshed, historical_rows_count, total_rows, len(EXPECTED_HEADERS),
         worksheet_name, os.environ.get("GITHUB_EVENT_NAME", "manual/local"),
         os.environ.get("GITHUB_RUN_NUMBER", ""), os.environ.get("GITHUB_RUN_ID", ""),
     ]
     log_ws.append_row(log_row, value_input_option="USER_ENTERED")
     print(
-        f"Refresh successful: {rows_added} rows added from new dates; "
-        f"{rows_refreshed} prior in-window rows replaced; {len(historical_rows)} historical rows retained; "
-        f"{len(merged_rows)} total data rows; {len(EXPECTED_HEADERS)} columns. "
-        f"Range {start_date:%d-%m-%Y} to {end_date:%d-%m-%Y}. Logged in '{LOG_WORKSHEET_NAME}'."
+        f"Append successful: {rows_added} new rows appended; no existing rows changed; "
+        f"{total_rows} total data rows; {len(EXPECTED_HEADERS)} columns. "
+        f"Date {start_date:%d-%m-%Y}. Logged in '{LOG_WORKSHEET_NAME}'."
     )
 
 
