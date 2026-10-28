@@ -1,300 +1,77 @@
-name: Main OZ99
-
+name: Main OZ99 — Ozonetel CDR to Google Sheets
+run-name: Ozonetel CDR refresh (rolling 15-day range)
 on:
-  workflow_dispatch:
   schedule:
-    # Run hourly at minute 15 (UTC)
-    - cron: "15 * * * *"
-
+    # Run every 6 hours (UTC): 00:00, 06:00, 12:00, 18:00 UTC.
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
 permissions:
   contents: read
-
 concurrency:
-  group: main-oz-cdr-refresh
+  group: ozontel-cdr-to-sheets
   cancel-in-progress: false
-
 jobs:
-  pull-and-refresh:
-    name: Pull T-4 through today Ozonetel CDR and refresh Google Sheets
+  refresh:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-
+    timeout-minutes: 20
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
       - name: Install dependencies
-        run: python -m pip install --upgrade pip gspread google-auth
-
-      - name: Configure Ozonetel credentials
+        run: pip install gspread google-auth
+      - name: Create runtime Ozonetel config
         env:
           OZONETEL_API_KEY: ${{ secrets.OZONETEL_API_KEY }}
           OZONETEL_USER_NAME: ${{ secrets.OZONETEL_USER_NAME }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           OZONETEL_HOST: ${{ vars.OZONETEL_HOST }}
         run: |
           python - <<'PY'
-          import configparser
-          import os
-
-          api_key = os.environ.get("OZONETEL_API_KEY", "").strip()
-          user_name = os.environ.get("OZONETEL_USER_NAME", "").strip()
-
-          if not api_key or not user_name:
-              raise SystemExit(
-                  "Missing GitHub Actions secrets: OZONETEL_API_KEY "
-                  "and/or OZONETEL_USER_NAME."
-              )
-
+          import configparser, os
           cfg = configparser.ConfigParser()
           cfg["ozonetel"] = {
-              "host": (
-                  os.environ.get("OZONETEL_HOST", "").strip()
-                  or "in1-ccaas-api.ozonetel.com"
-              ),
-              "api_key": api_key,
-              "user_name": user_name,
+              "host": os.environ.get("OZONETEL_HOST") or "in1-ccaas-api.ozonetel.com",
+              "api_key": os.environ["OZONETEL_API_KEY"],
+              "user_name": os.environ["OZONETEL_USER_NAME"],
+              "auth_mode": "auto",
           }
-
-          with open("config.ini", "w") as f:
+          with open("config.ini", "w", encoding="utf-8") as f:
               cfg.write(f)
-
-          print("Ozonetel credentials configured.")
           PY
-
-      - name: Calculate T-4 through today dates (India Standard Time)
-        id: cdr_dates
+      - name: Pull rolling last 15 calendar days of CDR data, including today
+        id: pull_cdr
+        env:
+          GITHUB_SHA: ${{ github.sha }}
         run: |
-          read -r START_DATE END_DATE < <(python - <<'PY'
+          rm -f ozonetel_cdr.csv
+          echo "Workflow commit: $GITHUB_SHA"
+          python -u - <<'PY'
           from datetime import datetime, timedelta
           from zoneinfo import ZoneInfo
+          import os, subprocess, sys
 
-          today_ist = datetime.now(ZoneInfo("Asia/Kolkata")).date()
-          start_date = today_ist - timedelta(days=4)
-          print(start_date.strftime("%d-%m-%Y"), today_ist.strftime("%d-%m-%Y"))
+          today = datetime.now(ZoneInfo("Asia/Kolkata")).date()
+          start = today - timedelta(days=14)
+          start_arg = start.strftime("%d-%m-%Y")
+          end_arg = today.strftime("%d-%m-%Y")
+          print(f"Explicit CDR range: {start_arg} through {end_arg} (15 calendar days)", flush=True)
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output_file:
+              output_file.write(f"CDR_FROM_DATE={start_arg}\nCDR_TO_DATE={end_arg}\n")
+          subprocess.run([
+              sys.executable, "-u", "ozonetel_cdr_pull.py",
+              "--from", start_arg, "--to", end_arg
+          ], check=True)
           PY
-          )
-
-          echo "start_date=$START_DATE" >> "$GITHUB_OUTPUT"
-          echo "end_date=$END_DATE" >> "$GITHUB_OUTPUT"
-          echo "CDR date range (IST): $START_DATE to $END_DATE"
-
-      - name: Pull T-4 through today data from Ozonetel
-        env:
-          START_DATE: ${{ steps.cdr_dates.outputs.start_date }}
-          END_DATE: ${{ steps.cdr_dates.outputs.end_date }}
-        run: |
-          echo "Fetching CDR data from $START_DATE through $END_DATE."
-
-          python ozonetel_cdr_pull.py \
-            --from "$START_DATE" \
-            --to "$END_DATE"
-
-          if [ ! -f ozonetel_cdr.csv ]; then
-            echo "ERROR: ozonetel_cdr.csv was not created."
-            exit 1
-          fi
-
-      - name: Validate and refresh Google Sheets tab
+      - name: Upload to Google Sheets
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
-          START_DATE: ${{ steps.cdr_dates.outputs.start_date }}
-          END_DATE: ${{ steps.cdr_dates.outputs.end_date }}
-        run: |
-          python - <<'PY'
-          import csv
-          import json
-          import os
-
-          import gspread
-          from google.oauth2.service_account import Credentials
-
-          sheet_id = os.environ.get("GOOGLE_SHEET_ID", "").strip()
-          raw_json = os.environ.get(
-              "GOOGLE_SERVICE_ACCOUNT_JSON", ""
-          ).strip()
-          start_date = os.environ["START_DATE"].strip()
-          end_date = os.environ["END_DATE"].strip()
-
-          if not sheet_id:
-              raise SystemExit("Missing repository secret GOOGLE_SHEET_ID.")
-
-          if not raw_json:
-              raise SystemExit(
-                  "Missing repository secret GOOGLE_SERVICE_ACCOUNT_JSON."
-              )
-
-          # Accept JSON copied with Markdown fences or a leading label.
-          # Never print the secret itself in logs.
-          normalized_json = raw_json.strip()
-          normalized_json = normalized_json.replace("```json", "").replace("```", "").strip()
-
-          # If the opening brace was accidentally omitted, restore it only
-          # when the expected service-account fields are present.
-          if (
-              not normalized_json.startswith("{")
-              and normalized_json.endswith("}")
-              and '"type"' in normalized_json
-              and '"private_key"' in normalized_json
-              and '"client_email"' in normalized_json
-          ):
-              normalized_json = "{" + normalized_json
-
-          try:
-              start = normalized_json.find("{")
-              if start < 0:
-                  raise ValueError("No JSON object opening brace was found.")
-
-              decoder = json.JSONDecoder()
-              credentials_info, end = decoder.raw_decode(normalized_json, start)
-              trailing = normalized_json[end:].strip()
-              if trailing:
-                  raise ValueError(
-                      "Extra text exists after the JSON object. "
-                      "The secret must contain only one complete JSON object."
-                  )
-          except (json.JSONDecodeError, ValueError) as e:
-              raise SystemExit(
-                  "GOOGLE_SERVICE_ACCOUNT_JSON is malformed. In GitHub "
-                  "Settings > Secrets and variables > Actions, replace it with "
-                  "the complete downloaded service-account JSON file. Include "
-                  "the opening { and closing }, and do not include labels, "
-                  "multiple JSON objects, or private-key text separately. "
-                  f"Details: {e}"
-              )
-
-          if not isinstance(credentials_info, dict):
-              raise SystemExit("Service-account credentials must be a JSON object.")
-
-          if credentials_info.get("type") != "service_account":
-              raise SystemExit(
-                  "GOOGLE_SERVICE_ACCOUNT_JSON must contain a service-account key."
-              )
-
-          credentials = Credentials.from_service_account_info(
-              credentials_info,
-              scopes=["https://www.googleapis.com/auth/spreadsheets"],
-          )
-
-          client = gspread.authorize(credentials)
-          spreadsheet = client.open_by_key(sheet_id)
-
-          try:
-              worksheet = spreadsheet.worksheet("ozontel dump")
-          except gspread.WorksheetNotFound:
-              worksheet = spreadsheet.add_worksheet(
-                  title="ozontel dump",
-                  rows=1000,
-                  cols=40,
-              )
-
-          with open(
-              "ozonetel_cdr.csv",
-              newline="",
-              encoding="utf-8-sig",
-          ) as f:
-              rows = list(csv.reader(f))
-
-          if not rows:
-              raise SystemExit(
-                  "CSV is empty. Refusing to clear the existing worksheet."
-              )
-
-          headers = rows[0]
-
-          expected_headers = [
-              "Call Type", "Campaign", "Caller No", "Caller_E164", "Skill",
-              "Call Date", "Start Time", "Time to Answer", "End Time",
-              "Talk Time", "Duration", "Agent", "Disposition", "Status",
-              "Comments", "Agent ID", "DID", "Dial Count",
-          ]
-
-          if headers != expected_headers:
-              raise SystemExit(
-                  f"CSV headers do not match the required 18 columns. "
-                  f"Found: {headers}. Existing worksheet was not cleared."
-              )
-
-          from datetime import datetime, timedelta
-          start_day = datetime.strptime(start_date, "%d-%m-%Y").date()
-          end_day = datetime.strptime(end_date, "%d-%m-%Y").date()
-          expected_dates = {
-              (start_day + timedelta(days=i)).strftime("%d-%m-%Y")
-              for i in range((end_day - start_day).days + 1)
-          }
-          date_index = headers.index("Call Date")
-
-          data_rows = [
-              row for row in rows[1:]
-              if any(cell.strip() for cell in row)
-          ]
-
-          unexpected_dates = sorted({
-              row[date_index].strip()
-              for row in data_rows
-              if len(row) > date_index
-              and row[date_index].strip() not in expected_dates
-          })
-
-          missing_date_rows = [
-              index + 2
-              for index, row in enumerate(rows[1:])
-              if any(cell.strip() for cell in row)
-              and (
-                  len(row) <= date_index
-                  or not row[date_index].strip()
-              )
-          ]
-
-          if unexpected_dates or missing_date_rows:
-              raise SystemExit(
-                  f"CSV failed date-range validation. Expected dates from "
-                  f"{start_date} through {end_date}; unexpected dates: "
-                  f"{unexpected_dates[:10]}; rows with missing dates: "
-                  f"{missing_date_rows[:10]}. Existing worksheet was not cleared."
-              )
-
-          column_count = max(len(row) for row in rows)
-
-          print(
-              f"Validation successful: {len(data_rows):,} rows "
-              f"from {start_date} through {end_date}."
-          )
-
-          # Clear the tab only after validation succeeds.
-          # Header-only CSV is allowed when there were no calls on T-1.
-          worksheet.clear()
-          worksheet.resize(
-              rows=max(len(rows), 1),
-              cols=max(column_count, 1),
-          )
-
-          chunk_size = 5000
-
-          for start in range(0, len(rows), chunk_size):
-              chunk = rows[start:start + chunk_size]
-              worksheet.update(
-                  range_name=f"A{start + 1}",
-                  values=chunk,
-                  value_input_option="RAW",
-              )
-
-          print(
-              f"Successfully refreshed '{worksheet.title}' with "
-              f"{len(data_rows):,} CDR rows from {start_date} through "
-              f"{end_date}, using {column_count} columns."
-          )
-          PY
-
-      - name: Upload CDR CSV artifact
-        if: always() && hashFiles('ozonetel_cdr.csv') != ''
-        uses: actions/upload-artifact@v4
-        with:
-          name: ozonetel-cdr-${{ github.run_id }}
-          path: ozonetel_cdr.csv
-          retention-days: 7
+          GOOGLE_WORKSHEET_NAME: "ozontel dump"
+          CDR_FROM_DATE: ${{ steps.pull_cdr.outputs.CDR_FROM_DATE }}
+          CDR_TO_DATE: ${{ steps.pull_cdr.outputs.CDR_TO_DATE }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_RUN_NUMBER: ${{ github.run_number }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+        run: python -u upload_to_google_sheets.py
