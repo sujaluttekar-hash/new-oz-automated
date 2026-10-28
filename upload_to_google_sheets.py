@@ -68,7 +68,7 @@ def main():
     if invalid_dates:
         raise SystemExit(f"Upload stopped: found an unparseable Call Date: {invalid_dates[0]!r}")
 
-    # Reject rows outside the intended five-day refresh window.
+    # Reject rows outside the intended 15-calendar-day refresh window.
     incoming_dates = [parse_date(r[date_idx]) for r in incoming]
     if any(d < start_date or d > end_date for d in incoming_dates):
         raise SystemExit("Upload stopped: CSV contains Call Date values outside the requested refresh window.")
