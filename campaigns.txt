@@ -1,0 +1,11 @@
+# Campaigns included in the CDR pull — one per line.
+# Taken from the manual export of 06-10-2026 (57 campaigns).
+# Add or remove lines to change what gets pulled.
+# Delete or empty this file to keep ALL campaigns.
+
+South_FB_and_Events_IB
+FB_and_Events_IB
+North_FB_and_Events_IB
+FB_and_Events_IB_Missed_Call
+Inbound_Missed_Call_South_FB_and_Events_IB
+Inbound_Missed_Call_Events
