@@ -42,6 +42,7 @@ Usage:
 import argparse, configparser, csv, json, os, re, sys, time
 import urllib.request, urllib.parse, urllib.error
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 # ---------------- settings ----------------
 OUTPUT_FILE = "ozonetel_cdr.csv"
@@ -52,46 +53,24 @@ CAMPAIGN_FILE = "campaigns.txt"   # one campaign per line; blank file = keep all
 # Output columns in the EXACT order of the manual export, mapped to API fields.
 # Confirmed against a real manual dump + a real API sample.
 COLUMNS = [
-    ("Call ID",              "CallID"),
-    ("Call Type",            "Type"),                  # spec column B
-    ("Campaign",             "CampaignName"),          # spec column C
-    ("Location",             "Location"),
-    ("Caller No",            "CallerID"),              # spec column E
-    ("Caller_E164",          "E164"),
-    ("Skill",                "Skill"),
-    ("Call Date",            "CallDate"),              # spec column H
-    ("Queue Time",           "QueueTime"),
-    ("Start Time",           "StartTime"),             # spec column J
-    ("Time to Answer",       "TimeToAnswer"),
-    ("End Time",             "EndTime"),
-    ("Talk Time",            "TalkTime"),
-    ("Hold Time",            "HoldDuration"),
-    ("Duration",             "Duration"),
-    ("Call Flow",            "_callflow"),
-    ("Dialed Number",        "DialedNumber"),
-    ("Agent",                "AgentName"),
-    ("Disposition",          "Disposition"),
-    ("Wrapup Duration",      "WrapupDuration"),
-    ("Handling Time",        "HandlingTime"),
-    ("Status",               "Status"),                # spec column V
-    ("Dial Status",          "DialStatus"),
-    ("Customer Dial Status", "CustomerDialStatus"),
-    ("Agent Dial Status",    "AgentDialStatus"),
-    ("Hangup By",            "HangupBy"),
-    ("Transfer Details",     "TransferredTo"),
-    ("UUI",                  "UUI"),
-    ("Comments",             "Comments"),
-    ("Feedback",             "RatingComments"),
-    ("Customer Ring Time",   "CustomerRingTime"),
-    ("Recording URL",        "CallAudio"),
-    ("Agent ID",             "AgentID"),
-    ("Ratings",              "Rating"),
-    ("Rating Comments",      "RatingComments"),
-    ("Video RecordingURL",   "VideoRecordingURL"),     # position 36
-    ("DynamicDid",           "DynamicDID"),            # spec column AK (position 37)
-    ("DID",                  "DID"),
-    ("Dial Count",           "DialCount"),
-    ("Dial DID",             "_blank"),
+    ("Call Type",       "Type"),
+    ("Campaign",        "CampaignName"),
+    ("Caller No",       "CallerID"),
+    ("Caller_E164",     "E164"),
+    ("Skill",           "Skill"),
+    ("Call Date",       "CallDate"),
+    ("Start Time",      "StartTime"),
+    ("Time to Answer",  "TimeToAnswer"),
+    ("End Time",        "EndTime"),
+    ("Talk Time",       "TalkTime"),
+    ("Duration",        "Duration"),
+    ("Agent",           "AgentName"),
+    ("Disposition",     "Disposition"),
+    ("Status",          "Status"),
+    ("Comments",        "Comments"),
+    ("Agent ID",        "AgentID"),
+    ("DID",             "DID"),
+    ("Dial Count",      "DialCount"),
 ]
 # How each field is combined when one call has several legs.
 # CHAIN  = unique non-blank values joined with " -> " in time order
@@ -111,8 +90,7 @@ MERGE = {
 # Blank values the manual export writes as a default instead of leaving empty.
 BLANK_DEFAULTS = {"Ratings": "0.00", "Dial Count": "0"}
 # Columns Excel would otherwise mangle into 9.18065E+11 — written as text.
-TEXT_COLUMNS = {"Call ID", "Caller No", "Caller_E164", "DID", "DynamicDid",
-                "Dialed Number", "Dial DID", "Agent ID"}
+TEXT_COLUMNS = {"Caller No", "Caller_E164", "DID", "Agent ID"}
 # -------------------------------------------
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -250,7 +228,7 @@ def main():
     ap.add_argument("--date"); ap.add_argument("--days", type=int)
     ap.add_argument("--from", dest="frm"); ap.add_argument("--to")
     a = ap.parse_args()
-    today = datetime.now().date()
+    today = datetime.now(ZoneInfo("Asia/Kolkata")).date()
 
     if a.date:
         days = [parse_day(a.date)]
