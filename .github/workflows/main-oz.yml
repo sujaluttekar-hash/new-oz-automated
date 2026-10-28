@@ -56,27 +56,21 @@ jobs:
               cfg.write(f)
           PY
 
-      - name: Pull month-to-date data available from Ozonetel
+      - name: Pull T-1 data from Ozonetel
         env:
           TZ: Asia/Kolkata
         run: |
-          # Ozonetel API exposes only the latest 15 calendar days.
-          # Pull from the later of the 1st of this month or 14 days before today.
+          # T-1 means yesterday in India Standard Time.
           python - <<'PY'
           from datetime import date, timedelta
-          today = date.today()
-          month_start = today.replace(day=1)
-          api_start = today - timedelta(days=14)
-          start = max(month_start, api_start)
-          print(f"Requested month-to-date: {month_start:%d-%m-%Y} to {today:%d-%m-%Y}")
-          print(f"API-available range:     {start:%d-%m-%Y} to {today:%d-%m-%Y}")
-          if start > month_start:
-              print("WARNING: Ozonetel API retains only the latest 15 days; earlier days require a manual export.")
-          with open(".cdr_dates", "w") as f:
-              f.write(f"{start:%d-%m-%Y}\n{today:%d-%m-%Y}\n")
+          yesterday = date.today() - timedelta(days=1)
+          cdr_date = yesterday.strftime("%d-%m-%Y")
+          print(f"Pulling T-1 Ozonetel CDR data for {cdr_date}")
+          with open(".cdr_date", "w") as f:
+              f.write(cdr_date)
           PY
-          readarray -t CDR_DATES < .cdr_dates
-          python ozonetel_cdr_pull.py --from "${CDR_DATES[0]}" --to "${CDR_DATES[1]}"
+          CDR_DATE="$(cat .cdr_date)"
+          python ozonetel_cdr_pull.py --from "$CDR_DATE" --to "$CDR_DATE"
 
       - name: Refresh Google Sheets tab
         env:
