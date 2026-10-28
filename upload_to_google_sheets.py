@@ -106,13 +106,18 @@ def main():
 
     # Append-only: never clear, rewrite, sort, or replace existing sheet rows.
     # Exact-row matching prevents duplicates when the scheduled workflow reruns.
-    existing_row_keys = {tuple(r) for r in old_rows}
+    def comparison_key(row):
+        # Sheets strips the leading apostrophe used to force phone/ID values to text.
+        return tuple((cell[1:] if cell.startswith("'") else cell) for cell in row)
+
+    existing_row_keys = {comparison_key(r) for r in old_rows}
     new_rows = []
     seen_new_keys = set()
     for row in incoming:
-        key = tuple((row + [""] * len(EXPECTED_HEADERS))[:len(EXPECTED_HEADERS)])
+        padded_row = (row + [""] * len(EXPECTED_HEADERS))[:len(EXPECTED_HEADERS)]
+        key = comparison_key(padded_row)
         if key not in existing_row_keys and key not in seen_new_keys:
-            new_rows.append(list(key))
+            new_rows.append(list(padded_row))
             seen_new_keys.add(key)
 
     if new_rows:
