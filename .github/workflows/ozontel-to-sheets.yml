@@ -41,6 +41,7 @@ jobs:
               cfg.write(f)
           PY
       - name: Pull rolling last 5 calendar days of CDR data, including today
+        id: pull_cdr
         env:
           GITHUB_SHA: ${{ github.sha }}
         run: |
@@ -68,8 +69,8 @@ jobs:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: "1gtOB-eUKRxiSVQ5nhuK6cK4Nsyb7GPHRqcVctk3NPI4"
           GOOGLE_WORKSHEET_NAME: "ozontel dump"
-          CDR_FROM_DATE: ${{ env.CDR_FROM_DATE }}
-          CDR_TO_DATE: ${{ env.CDR_TO_DATE }}
+          CDR_FROM_DATE: ${{ steps.pull_cdr.outputs.CDR_FROM_DATE }}
+          CDR_TO_DATE: ${{ steps.pull_cdr.outputs.CDR_TO_DATE }}
           GITHUB_EVENT_NAME: ${{ github.event_name }}
           GITHUB_RUN_NUMBER: ${{ github.run_number }}
           GITHUB_RUN_ID: ${{ github.run_id }}
