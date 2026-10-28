@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   pull-and-refresh:
-    name: Pull T-1 Ozonetel CDR and refresh Google Sheets
+    name: Pull T-4 through today Ozonetel CDR and refresh Google Sheets
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -66,31 +66,33 @@ jobs:
           print("Ozonetel credentials configured.")
           PY
 
-      - name: Calculate T-1 date (India Standard Time)
-        id: t1
+      - name: Calculate T-4 through today dates (India Standard Time)
+        id: cdr_dates
         run: |
-          CDR_DATE=$(python - <<'PY'
+          read -r START_DATE END_DATE < <(python - <<'PY'
           from datetime import datetime, timedelta
           from zoneinfo import ZoneInfo
 
           today_ist = datetime.now(ZoneInfo("Asia/Kolkata")).date()
-          yesterday = today_ist - timedelta(days=1)
-          print(yesterday.strftime("%d-%m-%Y"))
+          start_date = today_ist - timedelta(days=4)
+          print(start_date.strftime("%d-%m-%Y"), today_ist.strftime("%d-%m-%Y"))
           PY
           )
 
-          echo "cdr_date=$CDR_DATE" >> "$GITHUB_OUTPUT"
-          echo "T-1 CDR date (IST): $CDR_DATE"
+          echo "start_date=$START_DATE" >> "$GITHUB_OUTPUT"
+          echo "end_date=$END_DATE" >> "$GITHUB_OUTPUT"
+          echo "CDR date range (IST): $START_DATE to $END_DATE"
 
-      - name: Pull only T-1 data from Ozonetel
+      - name: Pull T-4 through today data from Ozonetel
         env:
-          CDR_DATE: ${{ steps.t1.outputs.cdr_date }}
+          START_DATE: ${{ steps.cdr_dates.outputs.start_date }}
+          END_DATE: ${{ steps.cdr_dates.outputs.end_date }}
         run: |
-          echo "Fetching CDR data for $CDR_DATE only."
+          echo "Fetching CDR data from $START_DATE through $END_DATE."
 
           python ozonetel_cdr_pull.py \
-            --from "$CDR_DATE" \
-            --to "$CDR_DATE"
+            --from "$START_DATE" \
+            --to "$END_DATE"
 
           if [ ! -f ozonetel_cdr.csv ]; then
             echo "ERROR: ozonetel_cdr.csv was not created."
@@ -101,7 +103,8 @@ jobs:
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
-          CDR_DATE: ${{ steps.t1.outputs.cdr_date }}
+          START_DATE: ${{ steps.cdr_dates.outputs.start_date }}
+          END_DATE: ${{ steps.cdr_dates.outputs.end_date }}
         run: |
           python - <<'PY'
           import csv
@@ -115,7 +118,8 @@ jobs:
           raw_json = os.environ.get(
               "GOOGLE_SERVICE_ACCOUNT_JSON", ""
           ).strip()
-          expected_date = os.environ["CDR_DATE"].strip()
+          start_date = os.environ["START_DATE"].strip()
+          end_date = os.environ["END_DATE"].strip()
 
           if not sheet_id:
               raise SystemExit("Missing repository secret GOOGLE_SHEET_ID.")
@@ -203,13 +207,28 @@ jobs:
 
           headers = rows[0]
 
-          if "Call Date" not in headers:
+          expected_headers = [
+              "Call Type", "Campaign", "Caller No", "Caller_E164", "Skill",
+              "Call Date", "Start Time", "Time to Answer", "End Time",
+              "Talk Time", "Duration", "Agent", "Disposition", "Status",
+              "Comments", "Agent ID", "DID", "Dial Count",
+          ]
+
+          if headers != expected_headers:
               raise SystemExit(
-                  "CSV is missing the 'Call Date' column. "
-                  "Refusing to clear the existing worksheet."
+                  f"CSV headers do not match the required 18 columns. "
+                  f"Found: {headers}. Existing worksheet was not cleared."
               )
 
+          from datetime import datetime, timedelta
+          start_day = datetime.strptime(start_date, "%d-%m-%Y").date()
+          end_day = datetime.strptime(end_date, "%d-%m-%Y").date()
+          expected_dates = {
+              (start_day + timedelta(days=i)).strftime("%d-%m-%Y")
+              for i in range((end_day - start_day).days + 1)
+          }
           date_index = headers.index("Call Date")
+
           data_rows = [
               row for row in rows[1:]
               if any(cell.strip() for cell in row)
@@ -219,7 +238,7 @@ jobs:
               row[date_index].strip()
               for row in data_rows
               if len(row) > date_index
-              and row[date_index].strip() != expected_date
+              and row[date_index].strip() not in expected_dates
           })
 
           missing_date_rows = [
@@ -234,17 +253,17 @@ jobs:
 
           if unexpected_dates or missing_date_rows:
               raise SystemExit(
-                  f"CSV failed T-1 validation. Expected Call Date "
-                  f"{expected_date}; unexpected dates: {unexpected_dates[:10]}; "
-                  f"rows with missing dates: {missing_date_rows[:10]}. "
-                  "Existing worksheet was not cleared."
+                  f"CSV failed date-range validation. Expected dates from "
+                  f"{start_date} through {end_date}; unexpected dates: "
+                  f"{unexpected_dates[:10]}; rows with missing dates: "
+                  f"{missing_date_rows[:10]}. Existing worksheet was not cleared."
               )
 
           column_count = max(len(row) for row in rows)
 
           print(
               f"Validation successful: {len(data_rows):,} rows "
-              f"for T-1 {expected_date}."
+              f"from {start_date} through {end_date}."
           )
 
           # Clear the tab only after validation succeeds.
@@ -267,7 +286,8 @@ jobs:
 
           print(
               f"Successfully refreshed '{worksheet.title}' with "
-              f"{len(data_rows):,} T-1 CDR rows and {column_count} columns."
+              f"{len(data_rows):,} CDR rows from {start_date} through "
+              f"{end_date}, using {column_count} columns."
           )
           PY
 
