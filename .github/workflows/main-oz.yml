@@ -1,4 +1,4 @@
-name: Main OZ99 — Ozonetel CDR to Google Sheets
+name: Main OZ99 updated
 run-name: Ozonetel CDR append (T-2 only)
 on:
   schedule:
