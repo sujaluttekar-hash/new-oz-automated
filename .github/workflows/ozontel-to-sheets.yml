@@ -57,8 +57,8 @@ jobs:
           start_arg = start.strftime("%d-%m-%Y")
           end_arg = today.strftime("%d-%m-%Y")
           print(f"Explicit CDR range: {start_arg} through {end_arg} (5 calendar days)", flush=True)
-          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env_file:
-              env_file.write(f"CDR_FROM_DATE={start_arg}\\nCDR_TO_DATE={end_arg}\\n")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output_file:
+              output_file.write(f"CDR_FROM_DATE={start_arg}\nCDR_TO_DATE={end_arg}\n")
           subprocess.run([
               sys.executable, "-u", "ozonetel_cdr_pull.py",
               "--from", start_arg, "--to", end_arg
