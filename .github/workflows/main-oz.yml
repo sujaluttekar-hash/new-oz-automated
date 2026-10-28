@@ -1,4 +1,3 @@
-```yaml
 name: Main OZ99
 
 on:
@@ -260,4 +259,3 @@ jobs:
           name: ozonetel-cdr-${{ github.run_id }}
           path: ozonetel_cdr.csv
           retention-days: 7
-```
