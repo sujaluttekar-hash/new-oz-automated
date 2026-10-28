@@ -1,4 +1,4 @@
-"""Append T-2 CDR rows without changing existing sheet data or the 18-column layout."""
+"""Append T-2-through-today CDR rows without changing existing sheet data or the 18-column layout."""
 import csv
 import json
 import os
@@ -68,7 +68,7 @@ def main():
     if invalid_dates:
         raise SystemExit(f"Upload stopped: found an unparseable Call Date: {invalid_dates[0]!r}")
 
-    # Reject rows outside the requested T-2 append date.
+    # Reject any API records outside the requested T-2-through-today window.
     incoming_dates = [parse_date(r[date_idx]) for r in incoming]
     if any(d < start_date or d > end_date for d in incoming_dates):
         raise SystemExit("Upload stopped: CSV contains Call Date values outside the requested refresh window.")
@@ -105,20 +105,42 @@ def main():
         worksheet.update(range_name="A1", values=[EXPECTED_HEADERS], value_input_option="RAW")
 
     # Append-only: never clear, rewrite, sort, or replace existing sheet rows.
-    # Exact-row matching prevents duplicates when the scheduled workflow reruns.
-    def comparison_key(row):
+    # Deduplicate by call identity, not the entire row: call disposition/comments can
+    # change between scheduled pulls, which otherwise makes the same call append twice.
+    def clean_cell(value):
+        value = str(value or "").strip()
         # Sheets strips the leading apostrophe used to force phone/ID values to text.
-        return tuple((cell[1:] if cell.startswith("'") else cell) for cell in row)
+        return value[1:] if value.startswith("'") else value
 
-    existing_row_keys = {comparison_key(r) for r in old_rows}
+    def phone_key(value):
+        return "".join(ch for ch in clean_cell(value) if ch.isdigit())
+
+    def call_key(row):
+        row = [clean_cell(c) for c in (row + [""] * len(EXPECTED_HEADERS))[:len(EXPECTED_HEADERS)]]
+        call_date = parse_date(row[date_idx])
+        call_date_key = call_date.isoformat() if call_date else row[date_idx]
+        # The export has no Call ID column, so use stable call fields and exclude
+        # mutable fields such as disposition, status, comments, end time and duration.
+        phone = phone_key(row[3]) or phone_key(row[2])  # Caller_E164, fallback Caller No
+        return (
+            call_date_key,
+            row[6].strip(),       # Start Time
+            row[1].strip(),       # Campaign
+            phone,
+            row[11].strip(),      # Agent
+            row[0].strip(),       # Call Type
+            row[15].strip(),      # Agent ID
+        )
+
+    existing_call_keys = {call_key(r) for r in old_rows}
     new_rows = []
-    seen_new_keys = set()
+    seen_call_keys = set()
     for row in incoming:
         padded_row = (row + [""] * len(EXPECTED_HEADERS))[:len(EXPECTED_HEADERS)]
-        key = comparison_key(padded_row)
-        if key not in existing_row_keys and key not in seen_new_keys:
+        key = call_key(padded_row)
+        if key not in existing_call_keys and key not in seen_call_keys:
             new_rows.append(list(padded_row))
-            seen_new_keys.add(key)
+            seen_call_keys.add(key)
 
     if new_rows:
         worksheet.append_rows(new_rows, value_input_option="USER_ENTERED", table_range="A1")
@@ -144,7 +166,7 @@ def main():
     print(
         f"Append successful: {rows_added} new rows appended; no existing rows changed; "
         f"{total_rows} total data rows; {len(EXPECTED_HEADERS)} columns. "
-        f"Date {start_date:%d-%m-%Y}. Logged in '{LOG_WORKSHEET_NAME}'."
+        f"Date range {start_date:%d-%m-%Y} to {end_date:%d-%m-%Y}. Logged in '{LOG_WORKSHEET_NAME}'."
     )
 
 
