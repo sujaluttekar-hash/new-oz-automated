@@ -61,6 +61,8 @@ def main():
         raise SystemExit("Upload stopped: CDR_FROM_DATE/CDR_TO_DATE are missing or invalid.")
 
     incoming = [row + [""] * (len(EXPECTED_HEADERS) - len(row)) for row in rows[1:] if any(c.strip() for c in row)]
+    if not incoming:
+        raise SystemExit("Upload stopped: CSV contains no data rows; existing sheet was left unchanged.")
     date_idx = EXPECTED_HEADERS.index("Call Date")
     invalid_dates = [r[date_idx] for r in incoming if not parse_date(r[date_idx])]
     if invalid_dates:
