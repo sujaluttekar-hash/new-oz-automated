@@ -1,5 +1,5 @@
 name: Main OZ99 updated
-run-name: Ozonetel CDR append (T-2 only)
+run-name: Ozonetel CDR append (T-2 through today)
 on:
   schedule:
     # Run every 6 hours (UTC): 00:00, 06:00, 12:00, 18:00 UTC.
@@ -40,7 +40,7 @@ jobs:
           with open("config.ini", "w", encoding="utf-8") as f:
               cfg.write(f)
           PY
-      - name: Pull T-2 only (day before yesterday)
+      - name: Pull T-2 through today
         id: pull_cdr
         env:
           GITHUB_SHA: ${{ github.sha }}
@@ -53,17 +53,18 @@ jobs:
           import os, subprocess, sys
 
           today = datetime.now(ZoneInfo("Asia/Kolkata")).date()
-          target = today - timedelta(days=2)
-          target_arg = target.strftime("%d-%m-%Y")
-          print(f"Explicit CDR date: {target_arg} (T-2 only)", flush=True)
+          start_date = today - timedelta(days=2)
+          start_arg = start_date.strftime("%d-%m-%Y")
+          end_arg = today.strftime("%d-%m-%Y")
+          print(f"Explicit CDR date range: {start_arg} through {end_arg} (T-2 to today)", flush=True)
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output_file:
-              output_file.write(f"CDR_FROM_DATE={target_arg}\nCDR_TO_DATE={target_arg}\n")
+              output_file.write(f"CDR_FROM_DATE={start_arg}\nCDR_TO_DATE={end_arg}\n")
           subprocess.run([
               sys.executable, "-u", "ozonetel_cdr_pull.py",
-              "--from", target_arg, "--to", target_arg
+              "--from", start_arg, "--to", end_arg
           ], check=True)
           PY
-      - name: Append T-2 data to Google Sheets
+      - name: Append missing T-2-through-today data to Google Sheets
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
