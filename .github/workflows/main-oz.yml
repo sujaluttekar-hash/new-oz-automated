@@ -116,7 +116,34 @@ jobs:
                   "Missing repository secret GOOGLE_SERVICE_ACCOUNT_JSON."
               )
 
-          credentials_info = json.loads(service_account_json)
+          # Accept a service-account JSON object copied without its opening
+          # brace, a common copy/paste mistake in GitHub Secrets.
+          normalized_json = service_account_json.strip()
+          if (
+              not normalized_json.startswith("{")
+              and normalized_json.endswith("}")
+              and '"type"' in normalized_json
+              and '"private_key"' in normalized_json
+              and '"client_email"' in normalized_json
+          ):
+              normalized_json = "{" + normalized_json
+
+          try:
+              credentials_info = json.loads(normalized_json)
+          except json.JSONDecodeError as e:
+              raise SystemExit(
+                  "GOOGLE_SERVICE_ACCOUNT_JSON is not valid JSON. In GitHub "
+                  "Settings > Secrets and variables > Actions, update this secret "
+                  "with the complete downloaded service-account JSON file, including "
+                  "the opening { and closing }. Do not paste the key into the YAML. "
+                  f"JSON error at line {e.lineno}, column {e.colno}."
+              )
+
+          if credentials_info.get("type") != "service_account":
+              raise SystemExit(
+                  "GOOGLE_SERVICE_ACCOUNT_JSON must be a Google service-account key JSON file."
+              )
+
           scopes = [
               "https://www.googleapis.com/auth/spreadsheets"
           ]
