@@ -1,5 +1,5 @@
 name: Ozontel CDR to Google Sheets
-run-name: Ozonetel CDR refresh (rolling 5-day range)
+run-name: Ozonetel CDR refresh (rolling 15-day range)
 on:
   schedule:
     # Run every 6 hours (UTC): 00:00, 06:00, 12:00, 18:00 UTC.
@@ -40,7 +40,7 @@ jobs:
           with open("config.ini", "w", encoding="utf-8") as f:
               cfg.write(f)
           PY
-      - name: Pull rolling last 5 calendar days of CDR data, including today
+      - name: Pull rolling last 15 calendar days of CDR data, including today
         id: pull_cdr
         env:
           GITHUB_SHA: ${{ github.sha }}
@@ -53,10 +53,10 @@ jobs:
           import os, subprocess, sys
 
           today = datetime.now(ZoneInfo("Asia/Kolkata")).date()
-          start = today - timedelta(days=4)
+          start = today - timedelta(days=14)
           start_arg = start.strftime("%d-%m-%Y")
           end_arg = today.strftime("%d-%m-%Y")
-          print(f"Explicit CDR range: {start_arg} through {end_arg} (5 calendar days)", flush=True)
+          print(f"Explicit CDR range: {start_arg} through {end_arg} (15 calendar days)", flush=True)
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output_file:
               output_file.write(f"CDR_FROM_DATE={start_arg}\nCDR_TO_DATE={end_arg}\n")
           subprocess.run([
