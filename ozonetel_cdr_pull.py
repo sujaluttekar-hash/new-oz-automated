@@ -47,7 +47,7 @@ from zoneinfo import ZoneInfo
 # ---------------- settings ----------------
 OUTPUT_FILE = "ozonetel_cdr.csv"
 PACE_SECONDS = 31          # 2 requests/minute limit
-MAX_DAYS_BACK = 15         # API hard limit
+MAX_DAYS_BACK = 14         # 15 calendar days including today
 CAMPAIGN_FILE = "campaigns.txt"   # one campaign per line; blank file = keep all
 
 # Output columns in the EXACT order of the manual export, mapped to API fields.
@@ -247,7 +247,7 @@ def main():
     too_old = [d for d in days if (today - d.date()).days > MAX_DAYS_BACK]
     if too_old:
         fail(f"{too_old[0]:%d-%m-%Y} is more than {MAX_DAYS_BACK} days ago.\n"
-             f"Ozonetel only keeps the last {MAX_DAYS_BACK} days — older data must\n"
+             f"Ozonetel only keeps the latest 15 calendar days — older data must\n"
              f"come from a manual export.")
     future = [d for d in days if d.date() > today]
     if future: fail(f"{future[0]:%d-%m-%Y} is in the future.")
