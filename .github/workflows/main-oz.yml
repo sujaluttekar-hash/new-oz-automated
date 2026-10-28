@@ -40,17 +40,41 @@ jobs:
           python - <<'PY'
           import configparser, os
           cfg = configparser.ConfigParser()
+          api_key = os.environ.get("OZONETEL_API_KEY", "").strip()
+          user_name = os.environ.get("OZONETEL_USER_NAME", "").strip()
+          if not api_key or not user_name:
+              raise SystemExit(
+                  "Missing GitHub Actions secret(s): set OZONETEL_API_KEY and "
+                  "OZONETEL_USER_NAME in Settings > Secrets and variables > Actions."
+              )
           cfg["ozonetel"] = {
               "host": os.environ.get("OZONETEL_HOST") or "in1-ccaas-api.ozonetel.com",
-              "api_key": os.environ["OZONETEL_API_KEY"],
-              "user_name": os.environ["OZONETEL_USER_NAME"],
+              "api_key": api_key,
+              "user_name": user_name,
           }
           with open("config.ini", "w") as f:
               cfg.write(f)
           PY
 
-      - name: Pull latest 14 calendar days
-        run: python ozonetel_cdr_pull.py --days 14
+      - name: Pull month-to-date data available from Ozonetel
+        run: |
+          # Ozonetel API exposes only the latest 15 calendar days.
+          # Pull from the later of the 1st of this month or 14 days before today.
+          python - <<'PY'
+          from datetime import date, timedelta
+          today = date.today()
+          month_start = today.replace(day=1)
+          api_start = today - timedelta(days=14)
+          start = max(month_start, api_start)
+          print(f"Requested month-to-date: {month_start:%d-%m-%Y} to {today:%d-%m-%Y}")
+          print(f"API-available range:     {start:%d-%m-%Y} to {today:%d-%m-%Y}")
+          if start > month_start:
+              print("WARNING: Ozonetel API retains only the latest 15 days; earlier days require a manual export.")
+          with open(".cdr_dates", "w") as f:
+              f.write(f"{start:%d-%m-%Y}\n{today:%d-%m-%Y}\n")
+          PY
+          readarray -t CDR_DATES < .cdr_dates
+          python ozonetel_cdr_pull.py --from "${CDR_DATES[0]}" --to "${CDR_DATES[1]}"
 
       - name: Refresh Google Sheets tab
         env:
