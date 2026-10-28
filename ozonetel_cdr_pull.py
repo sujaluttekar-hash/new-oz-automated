@@ -299,9 +299,8 @@ def main():
         all_rows.extend(rows)
 
     if not all_rows:
-        print("\nNo records found for the requested day(s). Nothing written.")
-        return
-
+        print("\nNo records found for the requested day(s). Writing a header-only CSV.")
+    
     out = os.path.join(HERE, OUTPUT_FILE)
     try:
         with open(out, "w", newline="", encoding="utf-8-sig") as f:
