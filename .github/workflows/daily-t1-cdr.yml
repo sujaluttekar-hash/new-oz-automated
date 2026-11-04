@@ -1,0 +1,73 @@
+name: Ozonetel CDR - T-1 Daily
+
+on:
+  schedule:
+    # 10:00 AM Asia/Kolkata = 04:30 UTC
+    - cron: "30 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ozonetel-cdr-t1
+  cancel-in-progress: false
+
+jobs:
+  pull-and-upload:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      TZ: Asia/Kolkata
+      OZONETEL_HOST: ${{ vars.OZONETEL_HOST || 'in1-ccaas-api.ozonetel.com' }}
+      OZONETEL_API_KEY: ${{ secrets.OZONETEL_API_KEY }}
+      OZONETEL_USER_NAME: ${{ secrets.OZONETEL_USER_NAME }}
+      GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+      GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+      GOOGLE_WORKSHEET_NAME: "ozontel dump"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip gspread google-auth
+
+      - name: Configure Ozonetel API
+        shell: bash
+        run: |
+          python - <<'PY'
+          import configparser, os
+          cfg = configparser.ConfigParser()
+          cfg["ozonetel"] = {
+              "host": os.environ["OZONETEL_HOST"],
+              "api_key": os.environ["OZONETEL_API_KEY"],
+              "user_name": os.environ["OZONETEL_USER_NAME"],
+          }
+          with open("config.ini", "w") as f:
+              cfg.write(f)
+          PY
+
+      - name: Calculate yesterday in India
+        id: dates
+        shell: bash
+        run: |
+          YESTERDAY="$(TZ=Asia/Kolkata date -d 'yesterday' +'%d-%m-%Y')"
+          echo "yesterday=$YESTERDAY" >> "$GITHUB_OUTPUT"
+          echo "T-1 CDR date: $YESTERDAY"
+
+      - name: Pull only T-1 CDR
+        run: |
+          rm -f ozonetel_cdr.csv
+          python -u ozonetel_cdr_pull.py --date "${{ steps.dates.outputs.yesterday }}"
+
+      - name: Upload only T-1 to Google Sheets
+        env:
+          CDR_FROM_DATE: ${{ steps.dates.outputs.yesterday }}
+          CDR_TO_DATE: ${{ steps.dates.outputs.yesterday }}
+        run: python -u upload_to_google_sheets.py
