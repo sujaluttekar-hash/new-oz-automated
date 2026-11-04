@@ -3,7 +3,7 @@
 Automates Ozonetel CDR retrieval and appends only the previous day's (T-1) CDRs to the configured Google Sheets tab.
 
 ## Automation
-- Scheduled daily at **10:00 AM Asia/Kolkata** (04:30 UTC).
+- Scheduled daily at **10:30 AM Asia/Kolkata** (05:00 UTC).
 - Each scheduled run pulls **yesterday only**; it must not pull T-2, today, or a multi-day range.
 - Output worksheet: `ozontel dump`.
 - Exact output columns, in order: `Call ID, Call Type, Campaign, Caller No, Caller_E164, Skill, Call Date, Start Time, Time to Answer, End Time, Talk Time, Duration, Agent, Disposition, Status, Comments, Agent ID, DID, Dial Count`.
