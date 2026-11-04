@@ -103,25 +103,47 @@ def main():
 
     old_values = worksheet.get_all_values()
     if old_values:
-        old_headers = old_values[0]
-        old_data = [r for r in old_values[1:] if any(str(c).strip() for c in r)]
-        legacy_headers = EXPECTED_HEADERS[1:]
-        legacy_call_id_last = EXPECTED_HEADERS[1:] + ["Call ID"]
-        if old_headers == EXPECTED_HEADERS:
-            old_rows = [(r + [""] * len(EXPECTED_HEADERS))[:len(EXPECTED_HEADERS)] for r in old_data]
-        elif old_headers == legacy_headers:
-            old_rows = [[""] + (r + [""] * (len(EXPECTED_HEADERS) - 1))[:len(EXPECTED_HEADERS) - 1] for r in old_data]
-            worksheet.clear()
-            worksheet.update(range_name="A1", values=[EXPECTED_HEADERS] + old_rows, value_input_option="RAW")
-        elif old_headers == legacy_call_id_last:
-            old_rows = [[r[18] if len(r) > 18 else ""] + (r + [""] * (len(EXPECTED_HEADERS) - 1))[:len(EXPECTED_HEADERS) - 1] for r in old_data]
-            worksheet.clear()
-            worksheet.update(range_name="A1", values=[EXPECTED_HEADERS] + old_rows, value_input_option="RAW")
+        old_headers = [str(h).strip() for h in old_values[0]]
+        old_data = [r for r in old_values[1:] if any(str(cell).strip() for cell in r)]
+
+        def normalize_header(value):
+            return " ".join(str(value or "").strip().lower().replace("_", " ").split())
+
+        expected_by_normalized = {normalize_header(h): i for i, h in enumerate(EXPECTED_HEADERS)}
+        old_positions = {}
+        for i, header in enumerate(old_headers):
+            normalized = normalize_header(header)
+            if normalized in expected_by_normalized and normalized not in old_positions:
+                old_positions[normalized] = i
+
+        required_legacy = {normalize_header(h) for h in EXPECTED_HEADERS[1:]}
+        present = set(old_positions)
+        # Support the new schema in any column order and older layouts that lacked
+        # Call ID. Refuse unknown/missing fields rather than risking silent misalignment.
+        if present == set(expected_by_normalized):
+            pass
+        elif required_legacy.issubset(present) and present.issubset(set(expected_by_normalized)):
+            pass
         else:
             raise SystemExit(
-                f"Upload stopped: existing '{worksheet_name}' headers do not match the supported "
-                "current or legacy layouts; sheet was left unchanged."
+                f"Upload stopped: existing '{worksheet_name}' headers cannot be safely mapped "
+                "to the required 19-column schema; sheet was left unchanged."
             )
+
+        old_rows = []
+        for source_row in old_data:
+            target_row = [""] * len(EXPECTED_HEADERS)
+            for normalized, target_index in expected_by_normalized.items():
+                source_index = old_positions.get(normalized)
+                if source_index is not None and source_index < len(source_row):
+                    target_row[target_index] = source_row[source_index]
+            old_rows.append(target_row)
+
+        # If header names/order differ or Call ID is absent, rewrite the tab in the
+        # requested order while preserving all mapped cell values.
+        if old_headers != EXPECTED_HEADERS:
+            worksheet.clear()
+            worksheet.update(range_name="A1", values=[EXPECTED_HEADERS] + old_rows, value_input_option="RAW")
     else:
         old_rows = []
         worksheet.update(range_name="A1", values=[EXPECTED_HEADERS], value_input_option="RAW")
