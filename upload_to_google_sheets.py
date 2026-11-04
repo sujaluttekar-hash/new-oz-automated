@@ -1,4 +1,4 @@
-"""Append T-2-through-today CDR rows without changing existing sheet data or the 18-column layout."""
+"""Append yesterday's Ozonetel CDR rows using the required 19-column schema."""
 import csv
 import json
 import os
@@ -13,7 +13,7 @@ CSV_PATH = Path(__file__).with_name("ozonetel_cdr.csv")
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 LOG_WORKSHEET_NAME = "logs"
 EXPECTED_HEADERS = [
-    "Call Type", "Campaign", "Caller No", "Caller_E164", "Skill",
+    "Call ID", "Call Type", "Campaign", "Caller No", "Caller_E164", "Skill",
     "Call Date", "Start Time", "Time to Answer", "End Time", "Talk Time",
     "Duration", "Agent", "Disposition", "Status", "Comments", "Agent ID",
     "DID", "Dial Count",
@@ -68,10 +68,22 @@ def main():
     if invalid_dates:
         raise SystemExit(f"Upload stopped: found an unparseable Call Date: {invalid_dates[0]!r}")
 
-    # Reject any API records outside the requested T-2-through-today window.
+    # Strict T-1 guard using the India-local date.
+    local_today = datetime.now(ZoneInfo("Asia/Kolkata")).date()
+    from datetime import timedelta
+    yesterday = local_today - timedelta(days=1)
+    if start_date != yesterday or end_date != yesterday:
+        raise SystemExit(
+            f"Upload stopped: this workflow must upload T-1 only ({yesterday:%d-%m-%Y}); "
+            f"requested range was {start_date:%d-%m-%Y} to {end_date:%d-%m-%Y}."
+        )
     incoming_dates = [parse_date(r[date_idx]) for r in incoming]
-    if any(d < start_date or d > end_date for d in incoming_dates):
-        raise SystemExit("Upload stopped: CSV contains Call Date values outside the requested refresh window.")
+    if any(d != yesterday for d in incoming_dates):
+        bad = next(d for d in incoming_dates if d != yesterday)
+        raise SystemExit(
+            f"Upload stopped: CSV contains Call Date {bad:%d-%m-%Y}; only T-1 "
+            f"({yesterday:%d-%m-%Y}) is allowed."
+        )
 
     credentials_json = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
     sheet_id = os.environ.get("GOOGLE_SHEET_ID", "").strip()
@@ -91,15 +103,25 @@ def main():
 
     old_values = worksheet.get_all_values()
     if old_values:
-        if old_values[0] != EXPECTED_HEADERS:
+        old_headers = old_values[0]
+        old_data = [r for r in old_values[1:] if any(str(c).strip() for c in r)]
+        legacy_headers = EXPECTED_HEADERS[1:]
+        legacy_call_id_last = EXPECTED_HEADERS[1:] + ["Call ID"]
+        if old_headers == EXPECTED_HEADERS:
+            old_rows = [(r + [""] * len(EXPECTED_HEADERS))[:len(EXPECTED_HEADERS)] for r in old_data]
+        elif old_headers == legacy_headers:
+            old_rows = [[""] + (r + [""] * (len(EXPECTED_HEADERS) - 1))[:len(EXPECTED_HEADERS) - 1] for r in old_data]
+            worksheet.clear()
+            worksheet.update(range_name="A1", values=[EXPECTED_HEADERS] + old_rows, value_input_option="RAW")
+        elif old_headers == legacy_call_id_last:
+            old_rows = [[r[18] if len(r) > 18 else ""] + (r + [""] * (len(EXPECTED_HEADERS) - 1))[:len(EXPECTED_HEADERS) - 1] for r in old_data]
+            worksheet.clear()
+            worksheet.update(range_name="A1", values=[EXPECTED_HEADERS] + old_rows, value_input_option="RAW")
+        else:
             raise SystemExit(
-                f"Upload stopped: existing '{worksheet_name}' headers do not match the required 18 columns; "
-                "sheet was left unchanged."
+                f"Upload stopped: existing '{worksheet_name}' headers do not match the supported "
+                "current or legacy layouts; sheet was left unchanged."
             )
-        old_rows = [
-            (r + [""] * (len(EXPECTED_HEADERS) - len(r)))[:len(EXPECTED_HEADERS)]
-            for r in old_values[1:] if any(c.strip() for c in r)
-        ]
     else:
         old_rows = []
         worksheet.update(range_name="A1", values=[EXPECTED_HEADERS], value_input_option="RAW")
@@ -119,17 +141,19 @@ def main():
         row = [clean_cell(c) for c in (row + [""] * len(EXPECTED_HEADERS))[:len(EXPECTED_HEADERS)]]
         call_date = parse_date(row[date_idx])
         call_date_key = call_date.isoformat() if call_date else row[date_idx]
-        # The export has no Call ID column, so use stable call fields and exclude
-        # mutable fields such as disposition, status, comments, end time and duration.
-        phone = phone_key(row[3]) or phone_key(row[2])  # Caller_E164, fallback Caller No
+        call_id = clean_cell(row[0])
+        if call_id:
+            return ("CALL_ID", call_id)
+        # Legacy records without Call ID: use stable fields, excluding mutable fields.
+        phone = phone_key(row[4]) or phone_key(row[3])  # Caller_E164, fallback Caller No
         return (
             call_date_key,
-            row[6].strip(),       # Start Time
-            row[1].strip(),       # Campaign
+            row[7].strip(),       # Start Time
+            row[2].strip(),       # Campaign
             phone,
-            row[11].strip(),      # Agent
-            row[0].strip(),       # Call Type
-            row[15].strip(),      # Agent ID
+            row[12].strip(),      # Agent
+            row[1].strip(),       # Call Type
+            row[16].strip(),      # Agent ID
         )
 
     existing_call_keys = {call_key(r) for r in old_rows}
