@@ -53,6 +53,7 @@ CAMPAIGN_FILE = "campaigns.txt"   # one campaign per line; blank file = keep all
 # Output columns in the EXACT order of the manual export, mapped to API fields.
 # Confirmed against a real manual dump + a real API sample.
 COLUMNS = [
+    ("Call ID",         "CallID"),
     ("Call Type",       "Type"),
     ("Campaign",        "CampaignName"),
     ("Caller No",       "CallerID"),
@@ -90,7 +91,7 @@ MERGE = {
 # Blank values the manual export writes as a default instead of leaving empty.
 BLANK_DEFAULTS = {"Ratings": "0.00", "Dial Count": "0"}
 # Columns Excel would otherwise mangle into 9.18065E+11 — written as text.
-TEXT_COLUMNS = {"Caller No", "Caller_E164", "DID", "Agent ID"}
+TEXT_COLUMNS = {"Call ID", "Caller No", "Caller_E164", "DID", "Agent ID"}
 # -------------------------------------------
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -214,9 +215,13 @@ def build_rows(records, allowed=None):
     """Group legs by Call ID; drop calls whose campaign isn't in the allow-list."""
     from collections import OrderedDict
     groups = OrderedDict()
-    for r in records:
-        if not isinstance(r, dict): continue
-        groups.setdefault(str(r.get("CallID", "")), []).append(r)
+    for index, r in enumerate(records):
+        if not isinstance(r, dict):
+            continue
+        call_id = str(r.get("CallID") or r.get("CallId") or r.get("call_id") or "").strip()
+        # Never merge unrelated records under one blank ID.
+        group_key = f"__missing_call_id_{index}" if not call_id else call_id
+        groups.setdefault(group_key, []).append(r)
     total = len(groups)
     if allowed:
         groups = OrderedDict((k, v) for k, v in groups.items()
