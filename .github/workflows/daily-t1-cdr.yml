@@ -2,8 +2,8 @@ name: Ozonetel CDR - T-1 Daily
 
 on:
   schedule:
-    # 10:00 AM Asia/Kolkata = 04:30 UTC
-    - cron: "30 4 * * *"
+    # 10:30 AM Asia/Kolkata = 05:00 UTC
+    - cron: "0 5 * * *"
   workflow_dispatch:
 
 permissions:
