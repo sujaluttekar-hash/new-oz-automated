@@ -55,9 +55,9 @@ jobs:
           value = yesterday.strftime("%d-%m-%Y")
           print(f"Daily extraction date (T-1): {value}", flush=True)
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
-              f.write(f"CDR_DATE={value}\\n")
-              f.write(f"CDR_FROM_DATE={value}\\n")
-              f.write(f"CDR_TO_DATE={value}\\n")
+              f.write(f"CDR_DATE={value}\n")
+              f.write(f"CDR_FROM_DATE={value}\n")
+              f.write(f"CDR_TO_DATE={value}\n")
           PY
       - name: Pull yesterday's CDRs only
         env:
