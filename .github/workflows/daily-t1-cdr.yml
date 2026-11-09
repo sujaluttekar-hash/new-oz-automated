@@ -19,7 +19,7 @@ jobs:
     timeout-minutes: 15
     env:
       TZ: Asia/Kolkata
-      OZONETEL_HOST: ${{ vars.OZONETEL_HOST || 'in1-ccaas-api.ozontel.com' }}
+      OZONETEL_HOST: ${{ vars.OZONETEL_HOST || 'in1-ccaas-api.ozonetel.com' }}
       OZONETEL_API_KEY: ${{ secrets.OZONETEL_API_KEY }}
       OZONETEL_USER_NAME: ${{ secrets.OZONETEL_USER_NAME }}
       GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
@@ -36,6 +36,40 @@ jobs:
 
       - name: Install dependencies
         run: python -m pip install --upgrade pip gspread google-auth
+
+      - name: Verify Ozonetel DNS (public DNS fallback)
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, os, socket, subprocess, urllib.parse, urllib.request
+
+          host = os.environ.get("OZONETEL_HOST", "in1-ccaas-api.ozonetel.com")
+          host = host.replace("https://", "").replace("http://", "").split("/")[0].split(":")[0]
+          try:
+              socket.getaddrinfo(host, 443)
+              print(f"DNS OK: {host}")
+          except OSError as exc:
+              print(f"Runner DNS lookup failed for {host}: {exc}")
+              url = "https://cloudflare-dns.com/dns-query?" + urllib.parse.urlencode(
+                  {"name": host, "type": "A"}
+              )
+              request = urllib.request.Request(url, headers={"accept": "application/dns-json"})
+              with urllib.request.urlopen(request, timeout=20) as response:
+                  payload = json.loads(response.read().decode("utf-8"))
+              ips = [
+                  item["data"] for item in payload.get("Answer", [])
+                  if item.get("type") == 1 and item.get("data")
+              ]
+              if not ips:
+                  raise SystemExit(f"Public DNS could not resolve {host}; stopping.")
+              entries = "".join(f"{ip} {host}\n" for ip in ips)
+              subprocess.run(
+                  ["sudo", "tee", "-a", "/etc/hosts"],
+                  input=entries, text=True, check=True, stdout=subprocess.DEVNULL
+              )
+              socket.getaddrinfo(host, 443)
+              print(f"DNS fallback OK: {host} -> {', '.join(ips)}")
+          PY
 
       - name: Configure Ozonetel API
         shell: bash
