@@ -67,9 +67,8 @@ jobs:
               ips = sorted({a["data"] for a in payload.get("Answer", []) if a.get("type") == 1})
               if not ips:
                   raise SystemExit(f"Public DNS could not resolve {host}; DNS response: {payload}")
-              with open("/etc/hosts", "a", encoding="utf-8") as hosts:
-                  for ip in ips:
-                      hosts.write(f"\\n{ip} {host}\\n")
+              entries = "".join(f"{ip} {host}\n" for ip in ips)
+              subprocess.run(["sudo", "tee", "-a", "/etc/hosts"], input=entries, text=True, check=True, stdout=subprocess.DEVNULL)
               print("Added fresh DNS-over-HTTPS resolution to runner hosts file:", ", ".join(ips), flush=True)
               socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
           PY
