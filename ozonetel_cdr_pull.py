@@ -124,7 +124,9 @@ def fetch_day(host, key, user, day):
     body = {"fromDate": day.strftime("%Y-%m-%d 00:00:00"),
             "toDate": day.strftime("%Y-%m-%d 23:59:59"), "userName": user}
     headers = {"apiKey": key, "Content-Type": "application/json"}
-    for attempt in range(4):
+    # GitHub-hosted runners can occasionally hit transient DNS/network failures.
+    # Retry with backoff; never switch to an undocumented host or silently skip a day.
+    for attempt in range(6):
         req = urllib.request.Request(url, data=json.dumps(body).encode(),
                                      method="GET", headers=headers)
         try:
@@ -138,13 +140,18 @@ def fetch_day(host, key, user, day):
             return res if isinstance(res, list) else []
         except urllib.error.HTTPError as e:
             txt = e.read().decode("utf-8", "replace")[:300]
-            if e.code == 429 and attempt < 3:
+            if e.code == 429 and attempt < 5:
                 step(f"rate limited — waiting {PACE_SECONDS}s and retrying")
                 time.sleep(PACE_SECONDS); continue
             fail(f"API error {e.code} for {day:%d-%m-%Y}: {txt}")
         except urllib.error.URLError as e:
-            if attempt < 3: time.sleep(10); continue
-            fail(f"Could not reach {host}: {e}")
+            if attempt < 5:
+                wait = min(15 * (2 ** attempt), 90)
+                step(f"DNS/network connection failed for {host} ({e}); retry {attempt + 2}/6 in {wait}s")
+                time.sleep(wait)
+                continue
+            fail(f"Could not resolve/reach Ozonetel host '{host}' after 6 attempts: {e}. "
+                 "Check GitHub runner DNS/network or the OZONETEL_HOST repository variable.")
     return []
 
 def parse_day(s):
