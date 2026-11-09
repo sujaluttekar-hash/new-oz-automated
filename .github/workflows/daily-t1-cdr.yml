@@ -2,8 +2,8 @@ name: Ozonetel CDR - T-1 Daily
 
 on:
   schedule:
-    # 10:30 AM Asia/Kolkata = 05:00 UTC
-    - cron: "0 5 * * *"
+    # 10:00 AM Asia/Kolkata = 04:30 UTC
+    - cron: "30 4 * * *"
   workflow_dispatch:
 
 permissions:
@@ -19,7 +19,7 @@ jobs:
     timeout-minutes: 15
     env:
       TZ: Asia/Kolkata
-      OZONETEL_HOST: ${{ vars.OZONETEL_HOST || 'in1-ccaas-api.ozonetel.com' }}
+      OZONETEL_HOST: ${{ vars.OZONETEL_HOST || 'in1-ccaas-api.ozontel.com' }}
       OZONETEL_API_KEY: ${{ secrets.OZONETEL_API_KEY }}
       OZONETEL_USER_NAME: ${{ secrets.OZONETEL_USER_NAME }}
       GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
