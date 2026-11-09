@@ -1,6 +1,9 @@
-name: Main OZ99 updated
-run-name: Ozonetel CDR append (manual legacy run)
+name: Ozonetel CDR - Daily T-1
+run-name: Ozonetel CDR T-1 append to Google Sheets
 on:
+  schedule:
+    # 10:30 AM Asia/Kolkata (05:00 UTC), once daily.
+    - cron: "0 5 * * *"
   workflow_dispatch:
 permissions:
   contents: read
@@ -10,7 +13,7 @@ concurrency:
 jobs:
   refresh:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -27,6 +30,10 @@ jobs:
         run: |
           python - <<'PY'
           import configparser, os
+          required = ("OZONETEL_API_KEY", "OZONETEL_USER_NAME")
+          missing = [k for k in required if not os.environ.get(k)]
+          if missing:
+              raise SystemExit("Missing GitHub Actions secrets: " + ", ".join(missing))
           cfg = configparser.ConfigParser()
           cfg["ozonetel"] = {
               "host": os.environ.get("OZONETEL_HOST") or "in1-ccaas-api.ozonetel.com",
@@ -37,37 +44,35 @@ jobs:
           with open("config.ini", "w", encoding="utf-8") as f:
               cfg.write(f)
           PY
-      - name: Pull T-2 through today
-        id: pull_cdr
-        env:
-          GITHUB_SHA: ${{ github.sha }}
+      - name: Calculate yesterday in India time (T-1 only)
+        id: dates
         run: |
-          rm -f ozonetel_cdr.csv
-          echo "Workflow commit: $GITHUB_SHA"
-          python -u - <<'PY'
+          python - <<'PY'
           from datetime import datetime, timedelta
           from zoneinfo import ZoneInfo
-          import os, subprocess, sys
-
-          today = datetime.now(ZoneInfo("Asia/Kolkata")).date()
-          start_date = today - timedelta(days=2)
-          start_arg = start_date.strftime("%d-%m-%Y")
-          end_arg = today.strftime("%d-%m-%Y")
-          print(f"Explicit CDR date range: {start_arg} through {end_arg} (T-2 to today)", flush=True)
-          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output_file:
-              output_file.write(f"CDR_FROM_DATE={start_arg}\nCDR_TO_DATE={end_arg}\n")
-          subprocess.run([
-              sys.executable, "-u", "ozonetel_cdr_pull.py",
-              "--from", start_arg, "--to", end_arg
-          ], check=True)
+          import os
+          yesterday = datetime.now(ZoneInfo("Asia/Kolkata")).date() - timedelta(days=1)
+          value = yesterday.strftime("%d-%m-%Y")
+          print(f"Daily extraction date (T-1): {value}", flush=True)
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
+              f.write(f"CDR_DATE={value}\\n")
+              f.write(f"CDR_FROM_DATE={value}\\n")
+              f.write(f"CDR_TO_DATE={value}\\n")
           PY
-      - name: Append missing T-2-through-today data to Google Sheets
+      - name: Pull yesterday's CDRs only
+        env:
+          CDR_DATE: ${{ steps.dates.outputs.CDR_DATE }}
+        run: |
+          rm -f ozonetel_cdr.csv
+          echo "Pulling T-1 only: $CDR_DATE"
+          python -u ozonetel_cdr_pull.py --date "$CDR_DATE"
+      - name: Append missing T-1 calls to Google Sheets
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
           GOOGLE_WORKSHEET_NAME: "ozontel dump"
-          CDR_FROM_DATE: ${{ steps.pull_cdr.outputs.CDR_FROM_DATE }}
-          CDR_TO_DATE: ${{ steps.pull_cdr.outputs.CDR_TO_DATE }}
+          CDR_FROM_DATE: ${{ steps.dates.outputs.CDR_FROM_DATE }}
+          CDR_TO_DATE: ${{ steps.dates.outputs.CDR_TO_DATE }}
           GITHUB_EVENT_NAME: ${{ github.event_name }}
           GITHUB_RUN_NUMBER: ${{ github.run_number }}
           GITHUB_RUN_ID: ${{ github.run_id }}
