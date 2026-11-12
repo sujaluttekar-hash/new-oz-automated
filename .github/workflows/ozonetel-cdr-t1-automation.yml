@@ -1,0 +1,115 @@
+name: Ozonetel CDR - T-1 Automation
+run-name: Ozonetel CDR T-1 - ${{ github.event_name }} - ${{ github.run_number }}
+
+on:
+  schedule:
+    # 10:07 AM Asia/Kolkata = 04:37 UTC; offset avoids the busy top-of-hour window.
+    - cron: "37 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ozonetel-cdr-t1-automation
+  cancel-in-progress: false
+
+jobs:
+  pull-and-upload:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      TZ: Asia/Kolkata
+      OZONETEL_HOST: ${{ vars.OZONETEL_HOST || 'in1-ccaas-api.ozonetel.com' }}
+      OZONETEL_API_KEY: ${{ secrets.OZONETEL_API_KEY }}
+      OZONETEL_USER_NAME: ${{ secrets.OZONETEL_USER_NAME }}
+      GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+      GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+      GOOGLE_WORKSHEET_NAME: "ozontel dump"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip gspread google-auth
+
+      - name: Verify Ozonetel DNS (public DNS fallback)
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, os, socket, subprocess, urllib.parse, urllib.request
+          host = os.environ["OZONETEL_HOST"].replace("https://", "").replace("http://", "").split("/")[0].split(":")[0]
+          try:
+              socket.getaddrinfo(host, 443)
+              print(f"DNS OK: {host}", flush=True)
+          except OSError as exc:
+              print(f"System DNS failed: {exc}; using Cloudflare DNS-over-HTTPS", flush=True)
+              query = urllib.parse.urlencode({"name": host, "type": "A"})
+              req = urllib.request.Request(
+                  "https://cloudflare-dns.com/dns-query?" + query,
+                  headers={"accept": "application/dns-json", "user-agent": "GitHubActions-Ozonetel-CDR"}
+              )
+              with urllib.request.urlopen(req, timeout=20) as response:
+                  payload = json.loads(response.read().decode("utf-8"))
+              ips = sorted({a["data"] for a in payload.get("Answer", []) if a.get("type") == 1})
+              if not ips:
+                  raise SystemExit(f"Public DNS could not resolve {host}: {payload}")
+              entries = "".join(f"{ip} {host}\n" for ip in ips)
+              subprocess.run(["sudo", "tee", "-a", "/etc/hosts"], input=entries, text=True, check=True, stdout=subprocess.DEVNULL)
+              socket.getaddrinfo(host, 443)
+              print(f"DNS fallback OK: {host} -> {', '.join(ips)}", flush=True)
+          PY
+
+      - name: Validate credentials and create Ozonetel config
+        shell: bash
+        run: |
+          python - <<'PY'
+          import configparser, os
+          required = ("OZONETEL_API_KEY", "OZONETEL_USER_NAME")
+          missing = [key for key in required if not os.environ.get(key)]
+          if missing:
+              raise SystemExit("Missing GitHub Actions secrets: " + ", ".join(missing))
+          cfg = configparser.ConfigParser()
+          cfg["ozonetel"] = {
+              "host": os.environ["OZONETEL_HOST"],
+              "api_key": os.environ["OZONETEL_API_KEY"],
+              "user_name": os.environ["OZONETEL_USER_NAME"],
+              "auth_mode": "auto",
+          }
+          with open("config.ini", "w", encoding="utf-8") as f:
+              cfg.write(f)
+          PY
+
+      - name: Calculate yesterday in India time (T-1 only)
+        id: dates
+        run: |
+          python - <<'PY'
+          from datetime import datetime, timedelta
+          from zoneinfo import ZoneInfo
+          import os
+          yesterday = datetime.now(ZoneInfo("Asia/Kolkata")).date() - timedelta(days=1)
+          value = yesterday.strftime("%d-%m-%Y")
+          print(f"Pulling T-1 CDR date: {value}", flush=True)
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
+              f.write(f"CDR_DATE={value}\n")
+              f.write(f"CDR_FROM_DATE={value}\n")
+              f.write(f"CDR_TO_DATE={value}\n")
+          PY
+
+      - name: Pull yesterday's CDRs only
+        env:
+          CDR_DATE: ${{ steps.dates.outputs.CDR_DATE }}
+        run: |
+          rm -f ozonetel_cdr.csv
+          python -u ozonetel_cdr_pull.py --date "$CDR_DATE"
+
+      - name: Append T-1 calls to Google Sheets
+        env:
+          CDR_FROM_DATE: ${{ steps.dates.outputs.CDR_FROM_DATE }}
+          CDR_TO_DATE: ${{ steps.dates.outputs.CDR_TO_DATE }}
+        run: python -u upload_to_google_sheets.py
