@@ -3,8 +3,8 @@ run-name: Ozonetel CDR T-1 - ${{ github.event_name }} - ${{ github.run_number }}
 
 on:
   schedule:
-    # 10:07 AM Asia/Kolkata = 04:37 UTC; offset avoids the busy top-of-hour window.
-    - cron: "37 4 * * *"
+    # Every 12 hours: 10:00 AM and 10:00 PM Asia/Kolkata (04:30 and 16:30 UTC).
+    - cron: "30 4,16 * * *"
   workflow_dispatch:
 
 permissions:
